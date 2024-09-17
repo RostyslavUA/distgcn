@@ -67,13 +67,13 @@ class Model(object):
                 self.activations.append(hidden)
                 layer_id = layer_id + 1
 
-        sparse_input = tf.cast(self.inputs, dtype=tf.float32)
+        sparse_input = tf.cast(self.inputs, dtype=tf.float64)
 
         if not self.skip:
             self.outputs = self.activations[-1]
         else:
-            # sparse_input = tf.cast(tf.sparse.to_dense(self.inputs, default_value=0), dtype=tf.float32)
-            sparse_input = tf.cast(self.inputs, dtype=tf.float32)
+            # sparse_input = tf.cast(tf.sparse.to_dense(self.inputs, default_value=0), dtype=tf.float64)
+            sparse_input = tf.cast(self.inputs, dtype=tf.float64)
             dense_input = tf.compat.v1.sparse_tensor_dense_matmul(sparse_input, tf.eye(self.input_dim))
             # hiddens = [dense_input] + self.activations[1:]
             hiddens = [dense_input] + self.activations[-1:]
@@ -84,7 +84,7 @@ class Model(object):
                 input_dim = dense_input.get_shape().as_list()[1]
                 output_dim = self.activations[-1].shape.as_list()[1]
                 dense_shape = [super_hidden.get_shape().as_list()[1], output_dim]
-                init_wts = np.zeros(dense_shape, dtype=np.float32)
+                init_wts = np.zeros(dense_shape, dtype=np.float64)
                 diag_mtx = np.identity(int(output_dim/2))
                 neg_indices = list(range(0, output_dim-1, 2))
                 pos_indices = list(range(1, output_dim, 2))
@@ -115,10 +115,26 @@ class Model(object):
             self.opt_op = self.optimizer.minimize(self.loss, global_step=self.global_step_tensor)
             # self.opt_op = self.optimizer.apply_gradients(clipped_gvs, global_step=self.global_step_tensor)
         else:
-            # grad_vars = self.optimizer.compute_gradients(self.loss)
+            grad_vars = self.optimizer.compute_gradients(self.loss, self.vars)
             # clipped_gvs = [(tf.clip_by_value(grad, -0.1, 0.1), var) for grad, var in grad_vars]
-            self.opt_op = self.optimizer.minimize(self.loss)
-            # self.opt_op = self.optimizer.apply_gradients(clipped_gvs)
+            # self.opt_op = self.optimizer.minimize(self.loss)
+            if self.architecture == 'decentralized':
+                grad_vars = self.consensus(grad_vars)
+            self.opt_op = self.optimizer.apply_gradients(grad_vars)
+
+    def consensus(self, grad_vars):
+        cons_mat = self.placeholders['cons_mat']
+        grad_means = []
+        for i, grad in enumerate(grad_vars):
+            grad_0 = grad[0]
+            grad_0 = tf.reshape(grad_0, (grad[0].shape[0], -1))
+            for _ in range(FLAGS.num_cons):
+                grad_0 = tf.compat.v1.sparse_tensor_dense_matmul(cons_mat, grad_0)
+            grad_0 *= grad[0].shape[0]
+            grad_0 = tf.reshape(grad_0, grad[0].shape)
+            grad_means.append((grad_0, grad[1]))
+        return grad_means
+
 
     def predict(self):
         pass
@@ -223,7 +239,7 @@ class GCN_DEEP_DIVER(Model):
         for var in self.layers[0].vars.values():
             self.loss += FLAGS.weight_decay * tf.nn.l2_loss(var)
 
-        sparse_input = tf.cast(self.inputs, dtype=tf.float32)
+        sparse_input = tf.cast(self.inputs, dtype=tf.float64)
         dense_input = tf.compat.v1.sparse_tensor_dense_matmul(sparse_input, tf.eye(self.input_dim))
         # 32 outputs
         # diver_loss = my_softmax_cross_entropy(self.outputs[:,0:self.output_dim], self.placeholders['labels'])
@@ -292,7 +308,7 @@ class GCN_DEEP_DIVER(Model):
 
 
 class GCN_DQN(Model):
-    def __init__(self, placeholders, input_dim, **kwargs):
+    def __init__(self, placeholders, input_dim, architecture='centralized', optimizer='Adam', **kwargs):
         super(GCN_DQN, self).__init__(**kwargs)
 
         self.inputs = placeholders['features']
@@ -300,6 +316,9 @@ class GCN_DQN(Model):
         # self.input_dim = self.inputs.get_shape().as_list()[1]  # To be supported in future Tensorflow versions
         self.output_dim = placeholders['labels'].get_shape().as_list()[1]
         self.placeholders = placeholders
+        self.architecture = architecture
+        if self.architecture == 'decentralized':
+            self.cons_mat = placeholders['cons_mat']
 
         if FLAGS.learning_decay < 1.0:
             self.global_step_tensor = tf.compat.v1.get_variable('global_step', trainable=False, shape=[],
@@ -308,14 +327,16 @@ class GCN_DQN(Model):
                                                        FLAGS.learning_decay, staircase=True)
         else:
             learning_rate = FLAGS.learning_rate
-        self.optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
-
+        if optimizer == 'Adam':
+            self.optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
+        elif optimizer == 'GD':
+            self.optimizer = tf.compat.v1.train.GradientDescentOptimizer(learning_rate=learning_rate)
         self.build()
 
     def _loss(self):
         # Weight decay loss
-        for var in self.layers[0].vars.values():
-            self.loss += FLAGS.weight_decay * tf.nn.l2_loss(var)
+        # for var in self.layers[0].vars.values():
+        #     self.loss += FLAGS.weight_decay * tf.nn.l2_loss(var)
 
         # regression loss
         # diver_loss = tf.reduce_mean(self.placeholders['labels'])
@@ -332,16 +353,16 @@ class GCN_DQN(Model):
         self.loss += diver_loss
 
     def _accuracy(self):
-        self.accuracy = tf.constant(0, dtype=tf.float32)
+        self.accuracy = tf.constant(0, dtype=tf.float64)
 
     def _f1(self):
-        self.f1 = tf.constant(0, dtype=tf.float32)
+        self.f1 = tf.constant(0, dtype=tf.float64)
 
     def _build(self):
-
+        layer_func = GraphConvolution if self.architecture == 'centralized' else DGraphConvolution
         _LAYER_UIDS['graphconvolution'] = 0
         if FLAGS.num_layer==1:
-            self.layers.append(GraphConvolution(input_dim=self.input_dim,
+            self.layers.append(layer_func(input_dim=self.input_dim,
                                                 output_dim=FLAGS.diver_num,
                                                 placeholders=self.placeholders,
                                                 act=tf.nn.leaky_relu,
@@ -351,7 +372,7 @@ class GCN_DQN(Model):
                                                 # bias=True,
                                                 logging=self.logging))
         else:
-            self.layers.append(GraphConvolution(input_dim=self.input_dim,
+            self.layers.append(layer_func(input_dim=self.input_dim,
                                                 output_dim=FLAGS.hidden1,
                                                 placeholders=self.placeholders,
                                                 act=tf.nn.leaky_relu,
@@ -360,7 +381,7 @@ class GCN_DQN(Model):
                                                 sparse_inputs=True,
                                                 logging=self.logging))
             for i in range(FLAGS.num_layer - 2):
-                self.layers.append(GraphConvolution(input_dim=FLAGS.hidden1,
+                self.layers.append(layer_func(input_dim=FLAGS.hidden1,
                                                     output_dim=FLAGS.hidden1,
                                                     placeholders=self.placeholders,
                                                     act=tf.nn.leaky_relu,
@@ -368,7 +389,7 @@ class GCN_DQN(Model):
                                                     dropout=True,
                                                     logging=self.logging))
 
-            self.layers.append(GraphConvolution(input_dim=FLAGS.hidden1,
+            self.layers.append(layer_func(input_dim=FLAGS.hidden1,
                                                 output_dim=FLAGS.diver_num,
                                                 placeholders=self.placeholders,
                                                 act=lambda x: x,

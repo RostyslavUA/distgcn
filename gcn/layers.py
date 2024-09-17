@@ -1,5 +1,6 @@
-from .inits import *
-
+import numpy.random
+from inits import *
+tf.compat.v1.disable_eager_execution()
 # global unique layer ID dictionary for layer name assignment
 _LAYER_UIDS = {}
 
@@ -14,10 +15,11 @@ def get_layer_uid(layer_name=''):
         return _LAYER_UIDS[layer_name]
 
 
-def sparse_dropout(x, keep_prob, noise_shape):
+def sparse_dropout(x, keep_prob, noise_shape, seed=42):
     """Dropout for sparse tensors."""
+    tf.random.set_seed(seed)
     random_tensor = keep_prob
-    random_tensor += tf.compat.v1.random_uniform(noise_shape)
+    random_tensor += tf.compat.v1.random_uniform(noise_shape, seed=seed, dtype=tf.float64)
     dropout_mask = tf.cast(tf.floor(random_tensor), dtype=tf.bool)
     pre_out = tf.compat.v1.sparse_retain(x, dropout_mask)
     return pre_out * (1./keep_prob)
@@ -133,7 +135,7 @@ class GraphConvolution(Layer):
         super(GraphConvolution, self).__init__(**kwargs)
 
         if dropout:
-            self.dropout = placeholders['dropout']
+            self.dropout = tf.cast(placeholders['dropout'], tf.float64)
         else:
             self.dropout = 0.
 
@@ -150,7 +152,7 @@ class GraphConvolution(Layer):
             for i in range(len(self.support)):
                 if FLAGS.wts_init == 'random':
                     self.vars['weights_' + str(i)] = glorot([input_dim, output_dim],
-                                                            name='weights_' + str(i))
+                                                            name='weights_' + str(i), seed=42)
                 elif FLAGS.wts_init == 'zeros':
                     self.vars['weights_' + str(i)] = zeros([input_dim, output_dim],
                                                             name='weights_' + str(i))
@@ -187,6 +189,77 @@ class GraphConvolution(Layer):
         if self.bias:
             output += self.vars['bias']
 
+        # concated = tf.concat([output, self.act(output)], axis=1)
+        # return tf.layers.dense(concated, output.shape[1])
+        return self.act(output)
+
+
+class DGraphConvolution(Layer):
+    """Graph convolution layer."""
+    def __init__(self, input_dim, output_dim, placeholders, dropout=0.,
+                 sparse_inputs=False, act=tf.nn.relu, bias=False,
+                 featureless=False, **kwargs):
+        super(DGraphConvolution, self).__init__(**kwargs)
+
+        if dropout:
+            self.dropout = tf.cast(placeholders['dropout'], tf.float64)
+        else:
+            self.dropout = 0.
+
+        self.act = act
+        self.support = placeholders['support']
+        self.sparse_inputs = sparse_inputs
+        self.featureless = featureless
+        self.bias = bias
+        self.num_nodes = self.support[0].shape[-1]
+
+        # helper variable for sparse dropout
+        self.num_features_nonzero = placeholders['num_features_nonzero']
+
+        with tf.compat.v1.variable_scope(self.name + '_vars'):
+            for i in range(len(self.support)):
+                if FLAGS.wts_init == 'random':
+                    self.vars['weights_' + str(i)] = glorot_dec([self.num_nodes, input_dim, output_dim],
+                                                                name='weights_' + str(i), seed=42)
+                elif FLAGS.wts_init == 'zeros':
+                    self.vars['weights_' + str(i)] = zeros([self.num_nodes, input_dim, output_dim],
+                                                            name='weights_' + str(i))
+                else:
+                    raise NameError('Unsupported wts_init: {}'.format(FLAGS.wts_init))
+            if self.bias:
+                self.vars['bias'] = zeros([self.num_nodes, output_dim], name='bias')
+
+        if self.logging:
+            self._log_vars()
+
+    def _call(self, inputs):
+        # Assuming the shape [num_nodes, feat_in]
+        x = inputs
+        # dropout
+        if self.sparse_inputs:
+            x = sparse_dropout(x, 1-self.dropout, self.num_features_nonzero)
+        else:
+            x = tf.nn.dropout(x, rate=self.dropout)
+        if self.sparse_inputs:
+            x = tf.sparse.to_dense(x)
+        x = tf.expand_dims(x, 1)
+
+        # convolve
+        supports = list()
+        for i in range(len(self.support)):
+            if not self.featureless:
+                pre_sup = x @ self.vars['weights_' + str(i)]
+            else:
+                pre_sup = self.vars['weights_' + str(i)]
+            pre_sup = tf.squeeze(pre_sup, 1)
+            # support = ops.modal_dot(self.support[i], pre_sup)
+            support = dot(self.support[i], pre_sup, sparse=True)
+            supports.append(support)
+        output = tf.add_n(supports)
+        self.output = output
+        # bias
+        if self.bias:
+            output += self.vars['bias']
         # concated = tf.concat([output, self.act(output)], axis=1)
         # return tf.layers.dense(concated, output.shape[1])
         return self.act(output)

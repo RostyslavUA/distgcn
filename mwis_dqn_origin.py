@@ -32,7 +32,12 @@ from runtime_config import *
 from test_utils import *
 from heuristics import *
 
-flags.DEFINE_string('test_datapath', './data/ER_Graph_Uniform_NP20_test', 'test dataset')
+tf.compat.v1.disable_eager_execution()
+random.seed(42)
+np.random.seed(42)
+tf.random.set_seed(42)
+
+flags.DEFINE_string('test_datapath', './data/ER_Graph_Uniform_GEN21_test2', 'test dataset')
 flags.DEFINE_float('epsilon', 1.0, 'test dataset')
 flags.DEFINE_float('epsilon_min', 0.001, 'test dataset')
 # test data path
@@ -40,6 +45,8 @@ data_path = FLAGS.datapath
 test_datapath = FLAGS.test_datapath
 val_mat_names = sorted(os.listdir(data_path))
 test_mat_names = sorted(os.listdir(test_datapath))
+val_mat_names = [name for name in val_mat_names if f'n{FLAGS.num_nodes}' in name]
+test_mat_names = [name for name in test_mat_names if f'n{FLAGS.num_nodes}' in name]
 
 # Some preprocessing
 noout = min(FLAGS.diver_num, FLAGS.diver_out) # number of outputs
@@ -153,8 +160,9 @@ def weighted_random_graph(N, p, dist, maxWts=1.0):
 
 
 class DQNAgent:
-    def __init__(self, feature_size=32, memory_size=5000):
+    def __init__(self, feature_size=32, architecture='centralized', memory_size=5000):
         self.feature_size = feature_size
+        self.architecture = architecture
         self.memory = deque(maxlen=memory_size)
         self.rewards = deque(maxlen=memory_size)
         self.gamma = 0.95    # discount rate
@@ -169,7 +177,8 @@ class DQNAgent:
 
     def _build_model(self):
         # Neural Net for Deep-Q learning Model
-        model = model_func(placeholders, input_dim=self.feature_size, logging=True)
+        model = model_func(placeholders, input_dim=self.feature_size, architecture=self.architecture,
+                           optimizer=FLAGS.optimizer, logging=True)
         return model
 
     def memorize(self, state, act_vals, solu, wts_nn, reward):
@@ -183,6 +192,10 @@ class DQNAgent:
         features = preprocess_features(features)
         support = simple_polynomials(adj, FLAGS.max_degree)
         state = {"features": features, "support": support}
+        if self.architecture == 'decentralized':
+            cons_mat = consensus_matrix(adj)
+            cons_mat = sparse_to_tuple(cons_mat)
+            state = {**state, **{'cons_mat': cons_mat}}
         return state
 
     def predict(self, state):
@@ -221,6 +234,8 @@ class DQNAgent:
             state = states[i]
             target_f = targets_f[i]
             feed_dict = construct_feed_dict(state['features'], state['support'], target_f, placeholders)
+            if self.architecture == 'decentralized':
+                feed_dict.update({placeholders['cons_mat']: state['cons_mat']})
             _, loss = self.sess.run([self.model.opt_op, self.model.loss], feed_dict=feed_dict)
             losses.append(loss)
             # history = self.model.fit(np.array(states), np.array(targets_f), epochs=1, verbose=0)
@@ -344,14 +359,17 @@ def solve_mwis_iterative(test=False):
 N_bd = FLAGS.feature_size
 
 # Define placeholders
+num_nodes = None if FLAGS.architecture == 'centralized' else FLAGS.num_nodes
 placeholders = {
-    'support': [tf.compat.v1.sparse_placeholder(tf.float32) for _ in range(num_supports)],
-    'features': tf.compat.v1.sparse_placeholder(tf.float32, shape=(None, N_bd)), # featureless: #points
-    'labels': tf.compat.v1.placeholder(tf.float32, shape=(None, 1)), # 0: not linked, 1:linked
-    'labels_mask': tf.compat.v1.placeholder(tf.int32),
+    'support': [tf.compat.v1.sparse_placeholder(tf.float64, shape=(None, num_nodes)) for _ in range(num_supports)],
+    'features': tf.compat.v1.sparse_placeholder(tf.float64, shape=(num_nodes, N_bd)), # featureless: #points
+    'labels': tf.compat.v1.placeholder(tf.float64, shape=(None, 1)), # 0: not linked, 1:linked
+    'labels_mask': tf.compat.v1.placeholder(tf.int64),
     'dropout': tf.compat.v1.placeholder_with_default(0., shape=()),
-    'num_features_nonzero': tf.compat.v1.placeholder(tf.int32)  # helper variable for sparse dropout
+    'num_features_nonzero': tf.compat.v1.placeholder(tf.int64)  # helper variable for sparse dropout
 }
+if FLAGS.architecture == 'decentralized':
+    placeholders.update({'cons_mat': tf.compat.v1.sparse_placeholder(tf.float64, shape=(None, num_nodes))})
 
 # use gpu 0
 os.environ['CUDA_VISIBLE_DEVICES'] = str(0)
@@ -361,7 +379,7 @@ config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
 
 # Create model
-dqn_agent = DQNAgent(N_bd, 5000)
+dqn_agent = DQNAgent(N_bd, FLAGS.architecture, 5000)
 try:
     dqn_agent.load(model_origin)
 except:
@@ -372,6 +390,7 @@ loss_vec = []
 
 epislon_reset = [5, 10, 15, 20]
 epislon_val = 1.0
+batch_size = 100
 
 best_ratio = 1.0
 for epoch in range(FLAGS.epochs):
@@ -387,6 +406,8 @@ for epoch in range(FLAGS.epochs):
         # print(val_mat_names[id])
         mat_contents = sio.loadmat(data_path + '/' + val_mat_names[id])
         adj_0 = mat_contents['adj']
+        if not nx.is_connected(nx.Graph(adj_0)):
+            continue
         wts = mat_contents['weights'].transpose()
         # yy_util = mat_contents['mwis_utility']
         # greedy_util = mat_contents['greedy_utility']
@@ -414,7 +435,7 @@ for epoch in range(FLAGS.epochs):
         f_ct += 1
         q_totals.append(len(solu))
         p_ratios.append(p_ratio[0])
-        if cnt < 200 - 1:
+        if cnt < batch_size - 1:
             cnt += 1
             continue
         else:
@@ -452,7 +473,7 @@ for epoch in range(FLAGS.epochs):
             dqn_agent.save(model_origin)
             best_ratio = np.mean(test_ratio)
 
-        loss = dqn_agent.replay(500)
+        loss = dqn_agent.replay(batch_size)
         # loss = dqn_agent.replay(100)
         if loss is None:
             loss = 1.0

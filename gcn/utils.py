@@ -9,6 +9,26 @@ import copy
 
 np.seterr(divide='ignore')
 
+
+def consensus_matrix(adj_0):
+    # Metropolis-Hastings weights
+    # https://web.stanford.edu/~boyd/papers/pdf/lmsc_mtns06.pdf
+    adj = copy.deepcopy(adj_0)
+    if np.max(adj.diagonal(0)) != 0:
+        adj.setdiag(0.0)
+    adj = sp.coo_matrix(adj)
+    d_vec = np.array(adj.sum(1)) + 1
+    d_mtx = sp.diags(d_vec.flatten())
+    d_i_mtx = d_mtx.dot(adj)
+    d_j_mtx = d_i_mtx.transpose()
+    d_max_mtx = d_i_mtx.maximum(d_j_mtx)
+    d_max_inv_data = 1/d_max_mtx.data
+    c_mtx = sp.csr_matrix((d_max_inv_data, d_max_mtx.indices, d_max_mtx.indptr), shape=d_max_mtx.shape)
+    on_diag = 1 - c_mtx.sum(1)
+    c_mtx.setdiag(on_diag)
+    return c_mtx
+
+
 def parse_index_file(filename):
     """Parse index file."""
     index = []

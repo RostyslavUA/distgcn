@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-tf.compat.v1.disable_eager_execution()
+# tf.compat.v1.disable_eager_execution()
 
 flags = tf.compat.v1.flags
 FLAGS = flags.FLAGS
@@ -12,10 +12,21 @@ def uniform(shape, scale=0.05, name=None):
     return tf.Variable(initial, name=name)
 
 
-def glorot(shape, name=None):
+def glorot(shape, name=None, seed=42):
     """Glorot & Bengio (AISTATS 2010) init."""
     init_range = np.sqrt(6.0/(shape[0]+shape[1]))
-    initial = tf.compat.v1.random_uniform(shape, minval=-init_range, maxval=init_range, dtype=tf.float32)
+    tf.random.set_seed(seed)
+    initial = tf.compat.v1.random_uniform(shape, minval=-init_range, maxval=init_range, dtype=tf.float64, seed=seed)
+    return tf.Variable(initial, name=name)
+
+
+def glorot_dec(shape, name=None, seed=42):
+    """Glorot & Bengio (AISTATS 2010) init."""
+    num_nodes, feat_in, feat_out = shape
+    init_range = np.sqrt(6.0/(shape[1]+shape[2]))
+    tf.random.set_seed(seed)
+    initial = tf.compat.v1.random_uniform((feat_in, feat_out), minval=-init_range, maxval=init_range, dtype=tf.float64, seed=seed)
+    initial = tf.tile(initial[tf.newaxis], [num_nodes, 1, 1])
     return tf.Variable(initial, name=name)
 
 
