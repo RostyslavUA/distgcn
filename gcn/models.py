@@ -122,7 +122,6 @@ class Model(object):
 
             if self.architecture == 'decentralized':
                 grad_vars = backprop_subsample(grad_vars, FLAGS.bp_subsample)
-                self.post_subsample = grad_vars
                 grad_vars = self.consensus(grad_vars)
             self.opt_op = self.optimizer.apply_gradients(grad_vars)
 
@@ -138,7 +137,6 @@ class Model(object):
             grad_0 = tf.reshape(grad_0, grad[0].shape)
             grad_means.append((grad_0, grad[1]))
         return grad_means
-
 
     def predict(self):
         pass

@@ -193,7 +193,12 @@ class DQNAgent:
         support = simple_polynomials(adj, FLAGS.max_degree)
         state = {"features": features, "support": support}
         if self.architecture == 'decentralized':
-            cons_mat = consensus_matrix(adj)
+            grad_average = True
+            if not grad_average:
+                cons_mat = consensus_matrix(adj)
+            else:
+                cons_mat = np.ones(adj.shape)/adj.shape[-1]
+                cons_mat = sp.coo_matrix(cons_mat)
             cons_mat = sparse_to_tuple(cons_mat)
             state = {**state, **{'cons_mat': cons_mat}}
         return state
