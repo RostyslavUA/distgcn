@@ -18,9 +18,10 @@ flags.DEFINE_float('weight_decay', 5e-4, 'Weight for L2 loss on embedding matrix
 flags.DEFINE_integer('early_stopping', 1000, 'Tolerance for early stopping (# of epochs).')
 flags.DEFINE_integer('max_degree', 1, 'Maximum Chebyshev polynomial degree.')
 flags.DEFINE_integer('num_layer', 5, 'number of layers.')
-flags.DEFINE_integer('num_cons', 100, 'Number of consensus rounds.')
+flags.DEFINE_integer('num_cons', 1, 'Number of consensus rounds.')
 
 flags.DEFINE_float('backoff_prob', 0.3, 'Probability of saving intermediate node on search tree.')
+flags.DEFINE_float('bp_subsample', 0.0, 'Ratio of nodes gradients to be subsampled in backpropagation.')
 flags.DEFINE_integer('diver_out', 32, 'Number of predictors in test.')
 flags.DEFINE_integer('timeout', 300, 'Total Seconds to Run each case.')
 flags.DEFINE_string('datapath','../twin-nphard/data/ER_Graph_Uniform_mixN_mixp_train0', 'Location of Data')

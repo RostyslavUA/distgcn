@@ -10,6 +10,17 @@ import copy
 np.seterr(divide='ignore')
 
 
+def backprop_subsample(grad_vars, zero_grad_ratio=0.1):
+    for i, gv in enumerate(grad_vars):
+        grad, var = gv
+        mask = np.ones(grad.shape)
+        indices_to_zero = np.random.choice(grad.shape[0], int(zero_grad_ratio*grad.shape[0]), replace=False)
+        mask[indices_to_zero] = 0.0
+        grad *= mask
+        grad_vars[i] = (grad, var)
+    return grad_vars
+
+
 def consensus_matrix(adj_0):
     # Metropolis-Hastings weights
     # https://web.stanford.edu/~boyd/papers/pdf/lmsc_mtns06.pdf

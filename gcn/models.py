@@ -1,6 +1,7 @@
 from .layers import *
 from .metrics import *
 from .layers import _LAYER_UIDS
+from .utils import backprop_subsample
 import numpy as np
 
 
@@ -118,7 +119,10 @@ class Model(object):
             grad_vars = self.optimizer.compute_gradients(self.loss, self.vars)
             # clipped_gvs = [(tf.clip_by_value(grad, -0.1, 0.1), var) for grad, var in grad_vars]
             # self.opt_op = self.optimizer.minimize(self.loss)
+
             if self.architecture == 'decentralized':
+                grad_vars = backprop_subsample(grad_vars, FLAGS.bp_subsample)
+                self.post_subsample = grad_vars
                 grad_vars = self.consensus(grad_vars)
             self.opt_op = self.optimizer.apply_gradients(grad_vars)
 
