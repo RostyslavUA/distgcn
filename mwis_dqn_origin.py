@@ -394,6 +394,7 @@ epislon_val = 1.0
 batch_size = 100
 
 best_ratio = 1.0
+np.random.seed(42)
 for epoch in range(FLAGS.epochs):
     losses = []
     cnt = 0
