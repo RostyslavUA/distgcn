@@ -380,10 +380,11 @@ config.gpu_options.allow_growth = True
 
 # Create model
 dqn_agent = DQNAgent(N_bd, FLAGS.architecture, 5000)
-try:
-    dqn_agent.load(model_origin)
-except:
-    print("Unable to load {}".format(model_origin))
+if FLAGS.load_pretrained:
+    try:
+        dqn_agent.load(model_origin)
+    except:
+        print("Unable to load {}".format(model_origin))
 
 best_IS_vec = []
 loss_vec = []
